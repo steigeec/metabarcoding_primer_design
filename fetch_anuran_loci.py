@@ -22,6 +22,7 @@ import os
 import sys
 import time
 import argparse
+import xml.etree.ElementTree as ET
 from collections import defaultdict
 
 from Bio import Entrez, SeqIO
@@ -137,6 +138,8 @@ def get_taxids(id_list: list) -> dict:
 def get_families(taxid_set: set) -> dict:
     """
     Resolve each unique TaxId to its family-level taxonomy.
+    Parses the raw taxonomy XML with ElementTree to avoid bugs in older
+    Biopython versions that mishandle the LineageEx DTD structure.
     Returns {taxid_str: family_name_str}.
     """
     taxid_family: dict = {}
@@ -146,14 +149,25 @@ def get_families(taxid_set: set) -> dict:
     for i in range(0, total, 200):
         batch = taxids[i : i + 200]
         handle = Entrez.efetch(db="taxonomy", id=",".join(batch), retmode="xml")
-        records = Entrez.read(handle)
+        raw = handle.read()
         handle.close()
-        for rec in records:
-            taxid = str(rec["TaxId"])   # str() ensures key type matches callers
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        root = ET.fromstring(raw)
+        for taxon in root.findall("Taxon"):
+            tid_el = taxon.find("TaxId")
+            if tid_el is None:
+                continue
+            taxid = tid_el.text.strip()
             family = "Unknown"
-            for node in rec.get("LineageEx", []):
-                if node["Rank"] == "family":
-                    family = node["ScientificName"]
+            lineage_ex = taxon.find("LineageEx")
+            if lineage_ex is not None:
+                for node in lineage_ex.findall("Taxon"):
+                    rank_el = node.find("Rank")
+                    name_el = node.find("ScientificName")
+                    if rank_el is not None and rank_el.text == "family" and name_el is not None:
+                        family = name_el.text
+                        break
             taxid_family[taxid] = family
         fetched += len(batch)
         print(
