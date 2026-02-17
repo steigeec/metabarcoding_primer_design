@@ -106,30 +106,47 @@ def fetch_fasta(webenv: str, query_key: str, count: int) -> list:
     return sequences
 
 
-def get_taxids(gi_list: list) -> dict:
+def get_taxids(id_list: list) -> dict:
     """
-    Fetch the TaxId for each sequence GI via esummary.
-    Returns {gi_str: taxid_str}.
+    Fetch the TaxId for each sequence ID (GI or accession) via epost + esummary.
+    Using epost avoids HTTP 414 errors when id_list is large.
+    Returns {id_str: taxid_str}.
     """
-    gi_taxid: dict = {}
-    total = len(gi_list)
+    id_taxid: dict = {}
+    total = len(id_list)
     fetched = 0
-    for i in range(0, total, 200):
-        batch = gi_list[i : i + 200]
-        handle = Entrez.esummary(db="nucleotide", id=",".join(batch))
-        summaries = Entrez.read(handle)
+    chunk_size = 10_000  # epost handles up to ~10k IDs comfortably
+    for chunk_start in range(0, total, chunk_size):
+        chunk = id_list[chunk_start : chunk_start + chunk_size]
+        # Post IDs to NCBI server history — no IDs in the URL
+        handle = Entrez.epost(db="nucleotide", id=",".join(chunk))
+        post = Entrez.read(handle)
         handle.close()
-        for s in summaries:
-            gi_taxid[s["Id"]] = str(s["TaxId"])
-        fetched += len(batch)
-        print(
-            f"    {fetched:,}/{total:,} taxonomy IDs fetched...",
-            end="\r",
-            flush=True,
-        )
         time.sleep(REQUEST_DELAY)
+        webenv = post["WebEnv"]
+        query_key = post["QueryKey"]
+        # Fetch summaries in batches via the server-side history
+        for start in range(0, len(chunk), 200):
+            handle = Entrez.esummary(
+                db="nucleotide",
+                webenv=webenv,
+                query_key=query_key,
+                retstart=start,
+                retmax=200,
+            )
+            summaries = Entrez.read(handle)
+            handle.close()
+            for s in summaries:
+                id_taxid[s["Id"]] = str(s["TaxId"])
+            fetched += min(200, len(chunk) - start)
+            print(
+                f"    {fetched:,}/{total:,} taxonomy IDs fetched...",
+                end="\r",
+                flush=True,
+            )
+            time.sleep(REQUEST_DELAY)
     print()
-    return gi_taxid
+    return id_taxid
 
 
 def get_families(taxid_set: set) -> dict:
@@ -147,7 +164,7 @@ def get_families(taxid_set: set) -> dict:
         records = Entrez.read(handle)
         handle.close()
         for rec in records:
-            taxid = rec["TaxId"]
+            taxid = str(rec["TaxId"])   # str() ensures key type matches callers
             family = "Unknown"
             for node in rec.get("LineageEx", []):
                 if node["Rank"] == "family":
@@ -190,9 +207,44 @@ def write_coverage_report(
 # Per-locus pipeline
 # ---------------------------------------------------------------------------
 
+def taxonomy_from_fasta(locus: str) -> None:
+    """Recompute family coverage from an already-downloaded FASTA (no re-download)."""
+    fasta_path = os.path.join(OUTPUT_DIR, f"{locus}.fasta")
+    if not os.path.exists(fasta_path):
+        print(f"  No FASTA found at {fasta_path} — skipping.")
+        return
+
+    print(f"  Reading {fasta_path}...")
+    records = list(SeqIO.parse(fasta_path, "fasta"))
+    n = len(records)
+    print(f"  {n:,} sequences loaded.")
+
+    # Extract accession IDs from the FASTA (first token of each header)
+    accessions = [rec.id for rec in records]
+
+    print("  Fetching taxonomy IDs...")
+    id_taxid = get_taxids(accessions)
+
+    taxid_counts: dict = defaultdict(int)
+    for taxid in id_taxid.values():
+        taxid_counts[taxid] += 1
+
+    unique_taxids = set(id_taxid.values())
+    print(f"  Resolving {len(unique_taxids):,} unique TaxIds to families...")
+    taxid_family = get_families(unique_taxids)
+
+    family_counts: dict = defaultdict(int)
+    for taxid, seq_count in taxid_counts.items():
+        family = taxid_family.get(taxid, "Unknown")
+        family_counts[family] += seq_count
+
+    report_path = os.path.join(OUTPUT_DIR, f"{locus}_tax_coverage.txt")
+    write_coverage_report(report_path, locus, dict(family_counts), n)
+    print(f"  Wrote  : coverage report → {report_path}")
+    print(f"  Families represented: {len(family_counts)}")
+
+
 def process_locus(locus: str, query: str) -> None:
-    print(f"\n{'='*60}")
-    print(f"  Locus : {locus}")
     print(f"  Query : {query}")
 
     # 1. Search
@@ -280,6 +332,15 @@ def main() -> None:
         default=OUTPUT_DIR,
         help=f"Output directory (default: {OUTPUT_DIR})",
     )
+    parser.add_argument(
+        "--taxonomy-only",
+        action="store_true",
+        help=(
+            "Skip sequence download; recompute family coverage from existing "
+            "FASTA files in --outdir. Useful for fixing coverage reports without "
+            "re-downloading."
+        ),
+    )
     args = parser.parse_args()
 
     Entrez.email = args.email
@@ -293,7 +354,12 @@ def main() -> None:
     print(f"Output directory: {os.path.abspath(OUTPUT_DIR)}/")
 
     for locus in args.loci:
-        process_locus(locus, LOCI_QUERIES[locus])
+        print(f"\n{'='*60}")
+        print(f"  Locus : {locus}")
+        if args.taxonomy_only:
+            taxonomy_from_fasta(locus)
+        else:
+            process_locus(locus, LOCI_QUERIES[locus])
 
     print(f"\nAll done.")
 
