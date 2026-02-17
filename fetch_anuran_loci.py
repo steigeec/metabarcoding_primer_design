@@ -19,6 +19,7 @@ Usage:
 """
 
 import os
+import re
 import sys
 import time
 import argparse
@@ -203,11 +204,102 @@ def write_coverage_report(
 
 
 # ---------------------------------------------------------------------------
+# Genus-based taxonomy helpers (used by taxonomy_from_fasta)
+# ---------------------------------------------------------------------------
+
+# Matches a capitalised genus word (≥3 chars) followed by a lowercase word,
+# optionally preceded by junk like "UNVERIFIED:" or an accession number.
+_GENUS_RE = re.compile(r'(?:^|\s)([A-Z][a-z]{2,})(?=\s+[a-z])')
+
+
+def _extract_genus(description: str) -> str:
+    """
+    Extract the genus name from an NCBI FASTA description line.
+    rec.description includes the accession as the first token, so we scan
+    for the first word that looks like a genus (Capitalised, ≥3 chars,
+    followed by a lowercase word).
+    """
+    match = _GENUS_RE.search(description)
+    return match.group(1) if match else "Unknown"
+
+
+def _family_from_taxonomy_xml(raw_xml: str) -> str:
+    """
+    Parse NCBI taxonomy XML and return the family name.
+
+    Strategy 1 — <LineageEx>: walk ranked ancestor nodes for Rank=="family".
+    Strategy 2 — <Lineage> text: scan the semicolon-delimited lineage string
+                 for the first element ending in 'idae' (all anuran families
+                 follow this ICZN convention).
+    """
+    try:
+        root = ET.fromstring(raw_xml)
+    except ET.ParseError:
+        return "Unknown"
+
+    for taxon in root.findall("Taxon"):
+        # Strategy 1: LineageEx with explicit rank
+        lineage_ex = taxon.find("LineageEx")
+        if lineage_ex is not None:
+            for node in lineage_ex.findall("Taxon"):
+                rank_el = node.find("Rank")
+                name_el = node.find("ScientificName")
+                if (rank_el is not None and rank_el.text == "family"
+                        and name_el is not None):
+                    return name_el.text
+
+        # Strategy 2: flat Lineage string — first "...idae" token is the family
+        lineage_el = taxon.find("Lineage")
+        if lineage_el is not None and lineage_el.text:
+            for part in lineage_el.text.split(";"):
+                part = part.strip()
+                if part.endswith("idae"):
+                    return part
+
+    return "Unknown"
+
+
+def _lookup_family_for_genus(genus: str) -> str:
+    """
+    Search NCBI taxonomy for *genus* and return its anuran family name.
+    Returns "Unknown" if the genus is not found or has no family in its lineage.
+    """
+    try:
+        handle = Entrez.esearch(
+            db="taxonomy",
+            term=f'"{genus}"[Organism]',
+            retmax=1,
+        )
+        result = Entrez.read(handle)
+        handle.close()
+        time.sleep(REQUEST_DELAY)
+        if not result["IdList"]:
+            return "Unknown"
+        taxid = result["IdList"][0]
+        handle = Entrez.efetch(db="taxonomy", id=taxid, retmode="xml")
+        raw = handle.read()
+        handle.close()
+        time.sleep(REQUEST_DELAY)
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        return _family_from_taxonomy_xml(raw)
+    except Exception:
+        return "Unknown"
+
+
+# ---------------------------------------------------------------------------
 # Per-locus pipeline
 # ---------------------------------------------------------------------------
 
 def taxonomy_from_fasta(locus: str) -> None:
-    """Recompute family coverage from an already-downloaded FASTA (no re-download)."""
+    """
+    Recompute family coverage from an already-downloaded FASTA (no re-download).
+
+    Method: extract the genus name from each FASTA description line, resolve
+    each unique genus to its anuran family via NCBI taxonomy (using the flat
+    <Lineage> string rather than <LineageEx> to avoid XML-parsing brittleness),
+    then tally sequences per family.
+    """
     fasta_path = os.path.join(OUTPUT_DIR, f"{locus}.fasta")
     if not os.path.exists(fasta_path):
         print(f"  No FASTA found at {fasta_path} — skipping.")
@@ -218,24 +310,27 @@ def taxonomy_from_fasta(locus: str) -> None:
     n = len(records)
     print(f"  {n:,} sequences loaded.")
 
-    # Extract accession IDs from the FASTA (first token of each header)
-    accessions = [rec.id for rec in records]
+    # Extract genus from every record's description line
+    genera = [_extract_genus(rec.description) for rec in records]
+    unique_genera = sorted(set(g for g in genera if g != "Unknown"))
+    print(f"  {len(unique_genera):,} unique genera to resolve.")
 
-    print("  Fetching taxonomy IDs...")
-    id_taxid = get_taxids(accessions)
+    # One taxonomy lookup per unique genus (much cheaper than per-sequence)
+    print("  Resolving genera to families via NCBI taxonomy...")
+    genus_family: dict = {}
+    for i, genus in enumerate(unique_genera):
+        genus_family[genus] = _lookup_family_for_genus(genus)
+        print(
+            f"    {i+1:,}/{len(unique_genera):,}  {genus} → {genus_family[genus]}",
+            end="\r",
+            flush=True,
+        )
+    print()
 
-    taxid_counts: dict = defaultdict(int)
-    for taxid in id_taxid.values():
-        taxid_counts[taxid] += 1
-
-    unique_taxids = set(id_taxid.values())
-    print(f"  Resolving {len(unique_taxids):,} unique TaxIds to families...")
-    taxid_family = get_families(unique_taxids)
-
+    # Tally sequences per family
     family_counts: dict = defaultdict(int)
-    for taxid, seq_count in taxid_counts.items():
-        family = taxid_family.get(taxid, "Unknown")
-        family_counts[family] += seq_count
+    for genus in genera:
+        family_counts[genus_family.get(genus, "Unknown")] += 1
 
     report_path = os.path.join(OUTPUT_DIR, f"{locus}_tax_coverage.txt")
     write_coverage_report(report_path, locus, dict(family_counts), n)
