@@ -39,24 +39,24 @@ LOCI_QUERIES = {
     "12S": (
         "Anura[Organism] AND "
         '("12S ribosomal RNA"[Title] OR "12S rRNA"[Title] OR "12S"[Title]) '
-        "AND biomol_dna[PROP] NOT patent[Filter]"
+        "NOT patent[Filter]"
     ),
     "16S": (
         "Anura[Organism] AND "
         '("16S ribosomal RNA"[Title] OR "16S rRNA"[Title] OR "16S"[Title]) '
-        "AND biomol_dna[PROP] NOT patent[Filter]"
+        "NOT patent[Filter]"
     ),
     "cytb": (
         "Anura[Organism] AND "
         '("cytochrome b"[Title] OR "cytb"[Title] OR "cyt b"[Title]) '
-        "AND biomol_dna[PROP] NOT patent[Filter]"
+        "NOT patent[Filter]"
     ),
     "COI": (
         "Anura[Organism] AND "
         '("cytochrome c oxidase subunit I"[Title] OR '
         '"cytochrome oxidase subunit I"[Title] OR '
         '"COI"[Title] OR "COX1"[Title] OR "CO1"[Title]) '
-        "AND biomol_dna[PROP] NOT patent[Filter]"
+        "NOT patent[Filter]"
     ),
 }
 
