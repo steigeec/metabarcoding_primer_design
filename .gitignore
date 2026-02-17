@@ -1,0 +1,14 @@
+# Downloaded data (large; regenerate with the script)
+amphibian_locus_data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Editor / OS
+.DS_Store
+*.swp
