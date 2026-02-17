@@ -358,31 +358,8 @@ def process_locus(locus: str, query: str) -> None:
     n_written = SeqIO.write(sequences, fasta_path, "fasta")
     print(f"  Wrote  : {n_written:,} sequences → {fasta_path}")
 
-    # 3. Fetch TaxIds for all GIs returned by esearch
-    print("  Fetching taxonomy IDs...")
-    gi_taxid = get_taxids(gi_list)
-
-    # 4. Count sequences per TaxId
-    taxid_counts: dict = defaultdict(int)
-    for taxid in gi_taxid.values():
-        taxid_counts[taxid] += 1
-
-    # 5. Resolve each unique TaxId to family
-    unique_taxids = set(gi_taxid.values())
-    print(f"  Resolving {len(unique_taxids):,} unique TaxIds to families...")
-    taxid_family = get_families(unique_taxids)
-
-    # 6. Aggregate to family-level counts
-    family_counts: dict = defaultdict(int)
-    for taxid, seq_count in taxid_counts.items():
-        family = taxid_family.get(taxid, "Unknown")
-        family_counts[family] += seq_count
-
-    # 7. Write coverage report
-    report_path = os.path.join(OUTPUT_DIR, f"{locus}_tax_coverage.txt")
-    write_coverage_report(report_path, locus, dict(family_counts), n_written)
-    print(f"  Wrote  : coverage report → {report_path}")
-    print(f"  Families represented: {len(family_counts)}")
+    # 3. Build coverage report from the downloaded FASTA using genus-based lookups
+    taxonomy_from_fasta(locus)
 
 
 # ---------------------------------------------------------------------------
