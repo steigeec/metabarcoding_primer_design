@@ -108,43 +108,28 @@ def fetch_fasta(webenv: str, query_key: str, count: int) -> list:
 
 def get_taxids(id_list: list) -> dict:
     """
-    Fetch the TaxId for each sequence ID (GI or accession) via epost + esummary.
-    Using epost avoids HTTP 414 errors when id_list is large.
+    Fetch the TaxId for each sequence ID (GI or accession) via esummary.
+    Batch size of 50 keeps URLs short enough to avoid HTTP 414 errors
+    even on older Biopython versions that use GET requests.
     Returns {id_str: taxid_str}.
     """
     id_taxid: dict = {}
     total = len(id_list)
     fetched = 0
-    chunk_size = 10_000  # epost handles up to ~10k IDs comfortably
-    for chunk_start in range(0, total, chunk_size):
-        chunk = id_list[chunk_start : chunk_start + chunk_size]
-        # Post IDs to NCBI server history — no IDs in the URL
-        handle = Entrez.epost(db="nucleotide", id=",".join(chunk))
-        post = Entrez.read(handle)
+    for i in range(0, total, 50):
+        batch = id_list[i : i + 50]
+        handle = Entrez.esummary(db="nucleotide", id=",".join(batch))
+        summaries = Entrez.read(handle)
         handle.close()
+        for s in summaries:
+            id_taxid[s["Id"]] = str(s["TaxId"])
+        fetched += len(batch)
+        print(
+            f"    {fetched:,}/{total:,} taxonomy IDs fetched...",
+            end="\r",
+            flush=True,
+        )
         time.sleep(REQUEST_DELAY)
-        webenv = post["WebEnv"]
-        query_key = post["QueryKey"]
-        # Fetch summaries in batches via the server-side history
-        for start in range(0, len(chunk), 200):
-            handle = Entrez.esummary(
-                db="nucleotide",
-                webenv=webenv,
-                query_key=query_key,
-                retstart=start,
-                retmax=200,
-            )
-            summaries = Entrez.read(handle)
-            handle.close()
-            for s in summaries:
-                id_taxid[s["Id"]] = str(s["TaxId"])
-            fetched += min(200, len(chunk) - start)
-            print(
-                f"    {fetched:,}/{total:,} taxonomy IDs fetched...",
-                end="\r",
-                flush=True,
-            )
-            time.sleep(REQUEST_DELAY)
     print()
     return id_taxid
 
