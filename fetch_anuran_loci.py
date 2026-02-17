@@ -244,6 +244,7 @@ def process_locus(locus: str, query: str) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    global MAX_RECORDS, OUTPUT_DIR
     parser = argparse.ArgumentParser(
         description="Download anuran sequences from NCBI for metabarcoding loci.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -285,7 +286,6 @@ def main() -> None:
     if args.api_key:
         Entrez.api_key = args.api_key
 
-    global MAX_RECORDS, OUTPUT_DIR
     MAX_RECORDS = args.max_records
     OUTPUT_DIR = args.outdir
 
